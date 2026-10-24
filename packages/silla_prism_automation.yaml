@@ -1,0 +1,186 @@
+# Silla Prism – mode selector and PV-surplus automation for Home Assistant
+# https://github.com/djdmx85/silla-prism-ha-automation
+#
+# Requirements: MQTT integration + official "Silla Prism" integration (HA 2026.9+).
+#
+# BEFORE INSTALLING, replace these four values everywhere in this file
+# (a plain find-and-replace is enough):
+#
+#   prism/                        MQTT base topic of your Prism, WITH trailing slash.
+#                                 Silla app default is "home/prism/"; HA integration default is "prism".
+#   sensor.silla_prism_status     "Status" sensor of the official integration
+#   sensor.silla_prism_power      "Power" sensor (its entity ID depends on your HA language)
+#   sensor.silla_prism_grid_power "Grid power" sensor
+#
+# Tested on a single-port Prism Solar, firmware 4.4.8.
+
+input_select:
+  prism_mode:
+    name: Prism mode
+    icon: mdi:ev-station
+    options: [Automatic, Hybrid, Solar, Boost, Pause]
+
+input_text:
+  prism_last_command:
+    name: Prism last command
+  prism_effective_mode:
+    name: Prism effective mode
+    icon: mdi:information-outline
+  prism_published_mode:
+    name: Prism published mode
+  prism_last_hello:
+    name: Prism last hello
+
+input_number:
+  prism_surplus_threshold:
+    name: Prism surplus threshold
+    min: 0
+    max: 7400
+    step: 50
+    unit_of_measurement: W
+    mode: slider
+    icon: mdi:transmission-tower-export
+  prism_start_delay:
+    name: Prism start delay
+    min: 1
+    max: 15
+    step: 1
+    unit_of_measurement: min
+    mode: slider
+    icon: mdi:play-outline
+  prism_pause_delay:
+    name: Prism pause delay
+    min: 1
+    max: 15
+    step: 1
+    unit_of_measurement: min
+    mode: slider
+    icon: mdi:pause
+
+template:
+  - sensor:
+      - name: Prism available surplus
+        unique_id: prism_available_surplus
+        icon: mdi:solar-power-variant
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+        # What the site would export if the wallbox were off:
+        # wallbox power minus grid exchange (import positive) measured by the Prism's own meter sensor.
+        # Works whether the wallbox is upstream or downstream of an inverter's meter.
+        state: >-
+          {{ (states('sensor.silla_prism_power') | float(0)
+              - states('sensor.silla_prism_grid_power') | float(0)) | round(0) }}
+        availability: >-
+          {{ has_value('sensor.silla_prism_power') and has_value('sensor.silla_prism_grid_power') }}
+
+automation:
+  # Mode codes on <base>/1/mode and <base>/1/command/set_mode:
+  # 1 Solar (OnlySun) · 2 Boost (Normal) · 3 Pause · 4 Hybrid · 7 pause by load balancing (status only)
+
+  - id: prism_apply_mode
+    alias: Prism - apply selected mode
+    description: Sends the selected mode; re-applies it when the car is plugged in and whenever the Prism (re)connects
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id: input_select.prism_mode
+        not_to: [unknown, unavailable]
+      # Pause is a session state: it is lost when the cable is unplugged
+      - trigger: state
+        entity_id: sensor.silla_prism_status
+        from: idle
+        to: [waiting, charging]
+      # hello is published on every (re)connection, e.g. after a power cut
+      - trigger: mqtt
+        topic: prism/hello
+        id: hello
+    actions:
+      - if:
+          - condition: trigger
+            id: hello
+        then:
+          - action: input_text.set_value
+            target: { entity_id: input_text.prism_last_hello }
+            data: { value: "{{ now().timestamp() | int }}" }
+      - variables:
+          code: >-
+            {% set s = states('input_select.prism_mode') %}{% if s == 'Automatic' %}{{ 4 if states('sensor.prism_available_surplus')|float(0) > states('input_number.prism_surplus_threshold')|float(0) else 3 }}{% else %}{{ {'Hybrid':4,'Solar':1,'Boost':2,'Pause':3}.get(s, 0) }}{% endif %}
+      - condition: template
+        value_template: "{{ code | int(0) in [1,2,3,4] }}"
+      # written BEFORE publishing, so the echo from the Prism is recognised
+      - action: input_text.set_value
+        target: { entity_id: input_text.prism_last_command }
+        data: { value: "{{ code }}" }
+      - action: mqtt.publish
+        data: { topic: prism/1/command/set_mode, payload: "{{ code }}", retain: false }
+
+  - id: prism_automatic_surplus
+    alias: Prism - automatic on surplus
+    description: In Automatic, Hybrid when the surplus stays above the threshold for the start delay, Pause when it stays below for the pause delay
+    mode: restart
+    triggers:
+      # template triggers are re-evaluated when the threshold changes too, still honouring the delays
+      - trigger: template
+        value_template: >-
+          {{ has_value('sensor.prism_available_surplus') and
+             states('sensor.prism_available_surplus') | float(0)
+             > states('input_number.prism_surplus_threshold') | float(0) }}
+        for: { minutes: "{{ states('input_number.prism_start_delay') | int(1) }}" }
+        id: hybrid
+      - trigger: template
+        value_template: >-
+          {{ has_value('sensor.prism_available_surplus') and
+             states('sensor.prism_available_surplus') | float(0)
+             < states('input_number.prism_surplus_threshold') | float(0) }}
+        for: { minutes: "{{ states('input_number.prism_pause_delay') | int(1) }}" }
+        id: pause
+    conditions:
+      - condition: state
+        entity_id: input_select.prism_mode
+        state: Automatic
+    actions:
+      - variables:
+          code: "{{ 4 if trigger.id == 'hybrid' else 3 }}"
+      - action: input_text.set_value
+        target: { entity_id: input_text.prism_last_command }
+        data: { value: "{{ code }}" }
+      - action: mqtt.publish
+        data: { topic: prism/1/command/set_mode, payload: "{{ code }}", retain: false }
+
+  - id: prism_sync_from_prism
+    alias: Prism - sync from Prism
+    description: Follows real mode changes made outside HA (Silla app, touch button); ignores republishing, HA's own echo, reboots and the end of a paused session
+    mode: queued
+    triggers:
+      - trigger: mqtt
+        topic: prism/1/mode
+    actions:
+      - variables:
+          c: "{{ trigger.payload | int(0) }}"
+          prev: "{{ states('input_text.prism_published_mode') | int(0) }}"
+          last: "{{ states('input_text.prism_last_command') | int(0) }}"
+      - action: input_text.set_value
+        target: { entity_id: input_text.prism_effective_mode }
+        data:
+          value: "{{ {1:'Solar',2:'Boost',3:'Pause',4:'Hybrid',7:'Pause (load balancing)'}.get(c, 'Unknown (' ~ c ~ ')') }}"
+      - action: input_text.set_value
+        target: { entity_id: input_text.prism_published_mode }
+        data: { value: "{{ c }}" }
+      # periodic republishing (every ~5 min), load-balancing pause, echo of HA's own command: nothing to do
+      - condition: template
+        value_template: "{{ c in [1,2,3,4] and c != prev and c != last }}"
+      # the Prism publishes the mode before hello, and the status may lag: wait a moment
+      - delay: { seconds: 5 }
+      # reboot / reconnection: prism_apply_mode re-applies the selection
+      - condition: template
+        value_template: "{{ (now().timestamp() - states('input_text.prism_last_hello') | int(0)) > 15 }}"
+      # end of a paused session (cable unplugged): the Prism falls back to its base mode
+      - condition: template
+        value_template: "{{ not (prev == 3 and last == 3 and states('sensor.silla_prism_status') == 'idle') }}"
+      - action: input_text.set_value
+        target: { entity_id: input_text.prism_last_command }
+        data: { value: "{{ c }}" }
+      - action: input_select.select_option
+        target: { entity_id: input_select.prism_mode }
+        data: { option: "{{ {1:'Solar',2:'Boost',3:'Pause',4:'Hybrid'}[c] }}" }
