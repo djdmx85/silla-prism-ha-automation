@@ -1,6 +1,6 @@
 # Silla Prism – mode selector and PV-surplus automation for Home Assistant
 
-<img src="images/dashboard.jpg" alt="Wallbox section in Automatic mode (Italian UI)" width="360" align="left">
+<img src="images/dashboard.jpg" alt="Wallbox section in Automatic mode (Italian UI)" width="300" align="left">
 
 A Home Assistant package for the **Silla Prism Solar** EV charger that adds:
 
