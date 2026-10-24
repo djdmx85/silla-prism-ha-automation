@@ -1,5 +1,7 @@
 # Silla Prism – mode selector and PV-surplus automation for Home Assistant
 
+<img src="images/dashboard.jpg" alt="Wallbox section in Automatic mode (Italian UI)" width="360" align="left">
+
 A Home Assistant package for the **Silla Prism Solar** EV charger that adds:
 
 - a **mode selector** with all the Prism modes, **including Hybrid**, which the official integration does not expose yet;
@@ -10,6 +12,8 @@ A Home Assistant package for the **Silla Prism Solar** EV charger that adds:
 It talks to the Prism over its native local MQTT protocol, works alongside the official
 [Silla Prism integration](https://www.home-assistant.io/integrations/silla_prism/), and needs nothing else:
 no custom components, no cloud, no inverter integration.
+
+<br clear="left">
 
 ## Why
 
