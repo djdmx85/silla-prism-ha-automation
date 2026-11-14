@@ -102,6 +102,7 @@ Verified with MQTT logs and the Home Assistant recorder; the Hybrid code was con
 | Grid target | in Hybrid the Prism keeps ≈100 W of grid draw; the OnlySun target set in the app does **not** apply to Hybrid (Silla). Silla advises against OnlySun targets between −50 and 50 W |
 | Hybrid minimum current | set in the app only with the cable unplugged; not available over MQTT |
 | Load balancing | in Boost the current is reduced to stay within the configured meter power |
+| Schedules (Silla app) | the Prism publishes the schedule's mode at the start of the window and `3` at the end; saving a schedule can publish two modes within seconds, and with a schedule enabled (even empty) the Prism paused itself ~3 s after the first start outside the window |
 
 ## Limitations
 
@@ -111,7 +112,16 @@ Verified with MQTT logs and the Home Assistant recorder; the Hybrid code was con
   minutes later than expected on a variable afternoon.
 - Single-port Prism only (port `1`). Tested on one single-phase Prism Solar with firmware 4.4.8.
 - Home Assistant restarts: the automatic triggers start "at rest" and act on the next change of conditions.
+- A mode change made in the Silla app (or by a Silla schedule) is followed after ~5 s and only if it is stable.
+  Home Assistant does not resend a mode the Prism is already in.
 
+## Changelog
+
+- **1.1** – Fix: two mode changes from the Prism within 5 s (e.g. saving a schedule in the Silla app) could make
+  Home Assistant and the Prism ping-pong between modes every few seconds. The sync automation now runs in `parallel`
+  mode, re-checks the published mode after the wait, and no command is sent when the Prism is already in that mode.
+- **1.0** – Initial release.
+  
 ## About this project
 
 The package was written with the assistance of an AI model (Anthropic's Claude) and designed, tested and validated
