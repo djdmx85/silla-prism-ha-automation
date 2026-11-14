@@ -112,6 +112,9 @@ automation:
       - action: input_text.set_value
         target: { entity_id: input_text.prism_last_command }
         data: { value: "{{ code }}" }
+      # the Prism is already in that mode (e.g. the selector was moved by prism_sync_from_prism): nothing to send
+      - condition: template
+        value_template: "{{ code | int(0) != states('input_text.prism_published_mode') | int(0) }}"
       - action: mqtt.publish
         data: { topic: prism/1/command/set_mode, payload: "{{ code }}", retain: false }
 
@@ -145,13 +148,19 @@ automation:
       - action: input_text.set_value
         target: { entity_id: input_text.prism_last_command }
         data: { value: "{{ code }}" }
+      - condition: template
+        value_template: "{{ code | int(0) != states('input_text.prism_published_mode') | int(0) }}"
       - action: mqtt.publish
         data: { topic: prism/1/command/set_mode, payload: "{{ code }}", retain: false }
 
   - id: prism_sync_from_prism
     alias: Prism - sync from Prism
-    description: Follows real mode changes made outside HA (Silla app, touch button); ignores republishing, HA's own echo, reboots and the end of a paused session
-    mode: queued
+    description: Follows real mode changes made outside HA (Silla app, touch button); follows only stable changes (5 s); ignores republishing, HA's own echo, reboots and the end of a paused session
+    # parallel, not queued: every message updates the published mode at once, and superseded messages
+    # are dropped after the wait. With queued, two changes within 5 s (e.g. a schedule saved in the Silla app)
+    # were replayed late and HA ping-ponged with the Prism every few seconds.
+    mode: parallel
+    max: 10
     triggers:
       - trigger: mqtt
         topic: prism/1/mode
@@ -172,6 +181,11 @@ automation:
         value_template: "{{ c in [1,2,3,4] and c != prev and c != last }}"
       # the Prism publishes the mode before hello, and the status may lag: wait a moment
       - delay: { seconds: 5 }
+      # after the wait: the Prism is still on c (not superseded) and c is not HA's last command (read now)
+      - condition: template
+        value_template: >-
+          {{ states('input_text.prism_published_mode') | int(0) == c
+             and states('input_text.prism_last_command') | int(0) != c }}
       # reboot / reconnection: prism_apply_mode re-applies the selection
       - condition: template
         value_template: "{{ (now().timestamp() - states('input_text.prism_last_hello') | int(0)) > 15 }}"
